@@ -38,7 +38,28 @@ type AuthRequest struct {
 	ChannelName string `json:"channel_name"`
 }
 
-var socketIDPattern = regexp.MustCompile(`^\d+\.\d+$`)
+var (
+	socketIDPattern = regexp.MustCompile(`^\d+\.\d+$`)
+	channelPattern  = regexp.MustCompile(`^[-a-zA-Z0-9_=@,.;]{1,200}$`)
+)
+
+// ValidSocketID reports whether id has the form "digits.digits".
+func ValidSocketID(id string) bool { return socketIDPattern.MatchString(id) }
+
+// ValidChannelName applies the Pusher rule: 1 to 200 characters from [-a-zA-Z0-9_=@,.;].
+func ValidChannelName(name string) bool { return channelPattern.MatchString(name) }
+
+// validate runs before anything is signed, so ':' or other bad characters can
+// never be used to forge a different string to sign.
+func validate(socketID, channel string) error {
+	if !ValidSocketID(socketID) {
+		return errors.New("broadcast: socket_id is missing or malformed")
+	}
+	if !ValidChannelName(channel) {
+		return errors.New("broadcast: channel_name is missing or malformed")
+	}
+	return nil
+}
 
 // HMACHex returns the lowercase hex HMAC-SHA256 of message.
 func HMACHex(secret, message string) string {
@@ -48,12 +69,18 @@ func HMACHex(secret, message string) string {
 }
 
 // AuthorizePrivate signs "socket_id:channel_name" for a private channel.
-func (c Credentials) AuthorizePrivate(socketID, channel string) AuthResponse {
-	return AuthResponse{Auth: c.Key + ":" + HMACHex(c.Secret, socketID+":"+channel)}
+func (c Credentials) AuthorizePrivate(socketID, channel string) (AuthResponse, error) {
+	if err := validate(socketID, channel); err != nil {
+		return AuthResponse{}, err
+	}
+	return AuthResponse{Auth: c.Key + ":" + HMACHex(c.Secret, socketID+":"+channel)}, nil
 }
 
 // AuthorizePresence signs "socket_id:channel_name:channel_data" for a presence channel.
 func (c Credentials) AuthorizePresence(socketID, channel string, member PresenceMember) (AuthResponse, error) {
+	if err := validate(socketID, channel); err != nil {
+		return AuthResponse{}, err
+	}
 	if member.UserID == nil || member.UserID == "" {
 		return AuthResponse{}, errors.New("broadcast: presence member needs a user_id")
 	}
@@ -94,11 +121,8 @@ func ParseAuthRequest(r *http.Request) (AuthRequest, error) {
 		}
 		req = AuthRequest{SocketID: r.PostForm.Get("socket_id"), ChannelName: r.PostForm.Get("channel_name")}
 	}
-	if req.ChannelName == "" {
-		return AuthRequest{}, errors.New("broadcast: channel_name is required")
-	}
-	if !socketIDPattern.MatchString(req.SocketID) {
-		return AuthRequest{}, errors.New("broadcast: socket_id is missing or malformed")
+	if err := validate(req.SocketID, req.ChannelName); err != nil {
+		return AuthRequest{}, err
 	}
 	return req, nil
 }

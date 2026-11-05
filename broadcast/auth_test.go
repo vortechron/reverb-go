@@ -3,6 +3,7 @@ package broadcast_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -13,7 +14,10 @@ import (
 var creds = broadcast.Credentials{AppID: "3", Key: "278d425bdf160c739803", Secret: "7ad3773142a6692b25b8"}
 
 func TestAuthorizePrivateSignsSocketAndChannel(t *testing.T) {
-	got := creds.AuthorizePrivate("1234.1234", "private-foobar")
+	got, err := creds.AuthorizePrivate("1234.1234", "private-foobar")
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := "278d425bdf160c739803:58df8b0c36d6982b82c3ecf6b4662e34fe8c25bba48f5369f135bf843651c3a4"
 	if got.Auth != want {
 		t.Fatalf("auth = %q, want %q", got.Auth, want)
@@ -94,5 +98,56 @@ func TestSocketIDFromRequestReadsEchoHeader(t *testing.T) {
 	r.Header.Set("X-Socket-Id", "12.34")
 	if got := broadcast.SocketIDFromRequest(r); got != "12.34" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+var badSocketIDs = []string{"", "abc", "1.2:x", "1234", "1.2.3", "1.2\n", " 1.2", "1.2:private-a"}
+var badChannels = []string{"", "private-a:b", "private a", "private-a\n", "private-<x>", "a/b", "p\u00e9", strings.Repeat("a", 201)}
+
+func TestAuthorizePrivateRejectsUnsafeInput(t *testing.T) {
+	for _, id := range badSocketIDs {
+		if got, err := creds.AuthorizePrivate(id, "private-a"); err == nil || got.Auth != "" {
+			t.Errorf("socket_id %q must be rejected, got %+v", id, got)
+		}
+	}
+	for _, ch := range badChannels {
+		if got, err := creds.AuthorizePrivate("1.2", ch); err == nil || got.Auth != "" {
+			t.Errorf("channel %q must be rejected, got %+v", ch, got)
+		}
+	}
+}
+
+func TestAuthorizePresenceRejectsUnsafeInput(t *testing.T) {
+	m := broadcast.PresenceMember{UserID: 1}
+	for _, id := range badSocketIDs {
+		if got, err := creds.AuthorizePresence(id, "presence-a", m); err == nil || got.Auth != "" {
+			t.Errorf("socket_id %q must be rejected", id)
+		}
+	}
+	for _, ch := range badChannels {
+		if got, err := creds.AuthorizePresence("1.2", ch, m); err == nil || got.Auth != "" {
+			t.Errorf("channel %q must be rejected", ch)
+		}
+	}
+	unencodable := broadcast.PresenceMember{UserID: 1, UserInfo: make(chan int)}
+	if _, err := creds.AuthorizePresence("1.2", "presence-a", unencodable); err == nil {
+		t.Error("unencodable user_info must be rejected")
+	}
+}
+
+func TestAuthorizeAcceptsAllPusherChannelCharacters(t *testing.T) {
+	if _, err := creds.AuthorizePrivate("1.2", "private-Az09_-=@,.;"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParseAuthRequestRejectsBadChannelName(t *testing.T) {
+	for _, ch := range badChannels {
+		body := "socket_id=1.2&channel_name=" + url.QueryEscape(ch)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/x", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if _, err := broadcast.ParseAuthRequest(r); err == nil {
+			t.Errorf("channel %q must be rejected", ch)
+		}
 	}
 }
