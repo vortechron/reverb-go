@@ -11,7 +11,8 @@ export CONF_APP_ID=conf-app CONF_APP_KEY=conf-key CONF_APP_SECRET=conf-secret
 log="$(mktemp -t reverb-conf.XXXXXX)"
 (
   cd "$APP"
-  env REVERB_APP_ID=$CONF_APP_ID REVERB_APP_KEY=$CONF_APP_KEY REVERB_APP_SECRET=$CONF_APP_SECRET \
+  # exec, so $pid is the php process itself and the trap really stops it
+  exec env REVERB_APP_ID=$CONF_APP_ID REVERB_APP_KEY=$CONF_APP_KEY REVERB_APP_SECRET=$CONF_APP_SECRET \
       REVERB_SCALING_ENABLED=false REVERB_APP_ACCEPT_CLIENT_EVENTS_FROM=members \
       APP_CONFIG_CACHE=/tmp/reverb-conf-missing-config.php APP_ENV=local \
       php artisan reverb:start --host=127.0.0.1 --port="$PORT"

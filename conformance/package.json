@@ -5,7 +5,7 @@
   "description": "Runs the same Pusher/Echo checks against Laravel Reverb and reverb-go.",
   "engines": { "node": ">=20" },
   "scripts": {
-    "test": "node --test --test-concurrency=1 --test-timeout=90000 suite/connection.test.mjs suite/channels.test.mjs suite/api.test.mjs"
+    "test": "node --test --test-concurrency=1 --test-timeout=90000 suite/connection.test.mjs suite/channels.test.mjs suite/api.test.mjs suite/php.test.mjs"
   },
   "dependencies": {
     "echo1": "npm:laravel-echo@^1.16.0",

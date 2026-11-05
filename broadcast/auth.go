@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"regexp"
 )
@@ -111,8 +112,9 @@ func encodeChannelData(member PresenceMember) (string, error) {
 // ParseAuthRequest reads socket_id and channel_name from a form body or a JSON body.
 func ParseAuthRequest(r *http.Request) (AuthRequest, error) {
 	var req AuthRequest
+	r.Body = http.MaxBytesReader(nil, r.Body, maxAuthBody)
 	if isJSON(r.Header.Get("Content-Type")) {
-		if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<16)).Decode(&req); err != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			return AuthRequest{}, fmt.Errorf("broadcast: decode json auth body: %w", err)
 		}
 	} else {
@@ -127,8 +129,12 @@ func ParseAuthRequest(r *http.Request) (AuthRequest, error) {
 	return req, nil
 }
 
+// maxAuthBody is the most we read from an auth request, form or JSON.
+const maxAuthBody = 64 << 10
+
 func isJSON(contentType string) bool {
-	return len(contentType) >= 16 && contentType[:16] == "application/json"
+	media, _, err := mime.ParseMediaType(contentType)
+	return err == nil && media == "application/json" // ParseMediaType lowercases the type
 }
 
 // SocketIDFromRequest returns the id Echo sends in the X-Socket-Id header.

@@ -153,3 +153,36 @@ func TestParseAuthRequestRejectsBadChannelName(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAuthRequestContentTypeIsCaseInsensitive(t *testing.T) {
+	for _, ctype := range []string{"Application/JSON", "application/json; charset=utf-8", "APPLICATION/JSON;charset=UTF-8"} {
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/x",
+			strings.NewReader(`{"socket_id":"1.2","channel_name":"private-a"}`))
+		r.Header.Set("Content-Type", ctype)
+		if got, err := broadcast.ParseAuthRequest(r); err != nil || got.ChannelName != "private-a" {
+			t.Errorf("%q: got %+v err=%v", ctype, got, err)
+		}
+	}
+	// A broken media type falls back to the form parser, which finds no fields.
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/x", strings.NewReader(`{"socket_id":"1.2"}`))
+	r.Header.Set("Content-Type", ";;;")
+	if _, err := broadcast.ParseAuthRequest(r); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestParseAuthRequestCapsBothBodyTypesAt64KB(t *testing.T) {
+	pad := strings.Repeat("a", 70<<10)
+	form := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/x",
+		strings.NewReader("socket_id=1.2&channel_name=private-a&pad="+pad))
+	form.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if _, err := broadcast.ParseAuthRequest(form); err == nil {
+		t.Error("an oversized form body must be rejected")
+	}
+	js := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/x",
+		strings.NewReader(`{"socket_id":"1.2","channel_name":"private-a","pad":"`+pad+`"}`))
+	js.Header.Set("Content-Type", "application/json")
+	if _, err := broadcast.ParseAuthRequest(js); err == nil {
+		t.Error("an oversized JSON body must be rejected")
+	}
+}

@@ -33,7 +33,14 @@ Names match Laravel Reverb.
 | `REVERB_APP_MAX_CONNECTIONS` | none | Over the limit: error 4004 |
 | `REVERB_APP_MAX_MESSAGE_SIZE` | `10000` | Bytes. A bigger client message closes the connection |
 | `REVERB_APP_ACCEPT_CLIENT_EVENTS_FROM` | `members` | `members`, `all`, or `none` (off) |
+| `REVERB_APP_MAX_CHANNELS_PER_CONNECTION` | `100` | Over the limit: error 4100 |
+| `REVERB_APP_MAX_PRESENCE_MEMBERS` | `100` | Distinct users per presence channel. Over the limit: error 4100 |
+| `REVERB_APP_MAX_CHANNEL_DATA_SIZE` | `5000` | Bytes of `channel_data` (user id and info). Over the limit: error 4200 |
+| `REVERB_APP_RATE_LIMITING_ENABLED` | `true` | Reverb's option, but on by default here |
+| `REVERB_APP_RATE_LIMIT_MAX_ATTEMPTS` / `_DECAY_SECONDS` | `600` / `60` | Client messages per window. Over: error 4301 |
+| `REVERB_APP_RATE_LIMIT_TERMINATE` | `false` | Also disconnect when over the limit |
 | `REVERB_SCALING_ENABLED` | `false` | Share events between nodes through Redis |
+| `REVERB_SCALING_SECRET` | required when scaling is on | Signs every Redis message (HMAC-SHA256). Use a long random value, the same on all nodes |
 | `REVERB_SCALING_CHANNEL` | `reverb-go` | Redis pub/sub channel |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DB` | `127.0.0.1` / `6379` / none / `0` | Redis |
 
@@ -77,11 +84,13 @@ The same values go in the `VITE_REVERB_*` variables that Echo reads. Stop `php a
 | Errors 4001, 4004, 4009, 4200, 4201, 4301 | yes |
 | Max message size, allowed origins, per-app client events on/off | yes |
 | Slow clients: bounded queue (256 frames), disconnected when full | yes |
+| Abuse limits: channels per connection, presence members, `channel_data` size, message rate limit | yes (defaults in the env table) |
+| Presence subscribe without a user id | refused (4009) |
 | `POST /apps/{id}/events`, `/batch_events` (`socket_id` exclusion, `info`) | yes |
 | `GET /apps/{id}/channels`, `/channels/{name}`, `/channels/{name}/users`, `/connections` | yes |
 | `POST /apps/{id}/users/{user}/terminate_connections` | yes |
 | Request signing: `auth_key`, `auth_timestamp` (600 s), `auth_version`, `body_md5`, `auth_signature` | yes |
-| `GET /up` | yes |
+| `GET /up` | yes (503 while the Redis bus is down) |
 | `pusher:signin`, watchlist, webhooks | no (Reverb has none either) |
 
 Conformance results for Laravel Reverb and reverb-go: [conformance/RESULTS.md](conformance/RESULTS.md).
@@ -100,8 +109,11 @@ avoid with one writer goroutine per connection anyway.
 - Each connection has a bounded send queue. `Send` never blocks. A full queue closes the socket.
 - Channel state lives in `internal/hub` behind one mutex per app. Delivery only enqueues frames.
 - Connection limit check and insert are one atomic step (`Hub.TryAdd`).
-- With Redis, every node still delivers locally first and publishes to Redis. Messages carry the
-  node id, so a node ignores its own.
+- With Redis, every node still delivers locally first and queues a signed message for Redis. A
+  bounded queue and one sender goroutine mean a slow Redis never blocks a client or an API call
+  (a full queue drops the message and logs it). Messages carry the node id, so a node ignores its own.
+- Fan-out to clients runs on a snapshot of the subscribers, outside the hub lock.
+- HTTP API requests have a read deadline (10 s, set per request, so WebSockets are not cut).
 
 ## Go package `broadcast`
 
@@ -153,6 +165,10 @@ A Go app must send exactly what Laravel would, or Echo listeners will not match:
 With `REVERB_SCALING_ENABLED=true` each node publishes events (including whispers) and
 terminate requests to a Redis channel, and every other node delivers them to its own clients.
 
+- Redis must have a password or ACL, and should not be reachable from the internet. Every message is
+  signed with `REVERB_SCALING_SECRET` and nodes drop unsigned or badly signed ones, but a password is
+  still the first line of defence. If Redis is down at start the node retries with backoff, and `/up`
+  answers 503 until the subscription is back.
 - The message format is reverb-go's own JSON. **A reverb-go node cannot join a PHP Reverb
   cluster** (Reverb publishes PHP-serialized objects). Replace all nodes at once.
 - Presence lists, channel info and connection counts are per node. In a cluster, a presence
@@ -161,7 +177,6 @@ terminate requests to a Redis channel, and every other node delivers them to its
 
 ## Known gaps
 
-- No per-connection rate limiting (Reverb's optional `rate_limiting`).
 - No in-process TLS, no Pulse or Telescope hooks, no webhooks.
 - Presence, channel info and `/connections` are not merged across nodes.
 - Differences from Reverb are listed in [conformance/RESULTS.md](conformance/RESULTS.md).
