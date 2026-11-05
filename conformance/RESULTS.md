@@ -6,7 +6,7 @@ before the review fixes; 5 checks with the real pusher-php-server were added aft
 
 | Target | How it was started | Result |
 |---|---|---|
-| Laravel Reverb v1.11.1 (PHP 8.4.25) | `run-reverb.sh`: `php artisan reverb:start --host=127.0.0.1 --port=6001` from `/Users/amiruladli/Projects/werewolf`, env overrides only, `APP_CONFIG_CACHE=/tmp/reverb-conf-missing-config.php`, no file edited | 66 passed, 0 failed |
+| Laravel Reverb v1.11.1 (PHP 8.4.25) | `run-reverb.sh`: `php artisan reverb:start --host=127.0.0.1 --port=6001` from a Laravel 12 app with laravel/reverb installed, env overrides only, `APP_CONFIG_CACHE=/tmp/reverb-conf-missing-config.php`, no file edited | 66 passed, 0 failed |
 | reverb-go (this repo) | `run-reverb-go.sh`: built binary on `127.0.0.1:6002` | 66 passed, 0 failed (run three times, same result) |
 
 Clients used (Node v22.14.0): pusher-js 8.6.0, laravel-echo 1.19.0 (alias `echo1`),

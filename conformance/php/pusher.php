@@ -6,7 +6,11 @@
 
 declare(strict_types=1);
 
-$autoload = getenv('CONF_PHP_AUTOLOAD') ?: '/Users/amiruladli/Projects/werewolf/vendor/autoload.php';
+$autoload = getenv('CONF_PHP_AUTOLOAD');
+if ($autoload === false || $autoload === '') {
+    fwrite(STDERR, "set CONF_PHP_AUTOLOAD to a vendor/autoload.php that has pusher/pusher-php-server\n");
+    exit(2);
+}
 require $autoload;
 
 $pusher = new Pusher\Pusher(

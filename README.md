@@ -5,6 +5,9 @@ A Pusher Channels (protocol 7) WebSocket server in Go. It is a drop-in for
 no client change. It also ships a Go package, `broadcast`, for publishing events and for
 answering `/broadcasting/auth`.
 
+reverb-go is an independent project. It is not made by, affiliated with or endorsed by
+Laravel or Pusher. "Laravel", "Laravel Reverb" and "Pusher" are trademarks of their owners.
+
 ## Run it
 
 ```bash

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Runs the suite against real Laravel Reverb, started from the werewolf app
-# without editing any file there: only environment overrides.
+# Runs the suite against real Laravel Reverb, started from a Laravel app that has
+# laravel/reverb installed (LARAVEL_APP_DIR), without editing any file there:
+# only environment overrides.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-APP="${WEREWOLF_DIR:-/Users/amiruladli/Projects/werewolf}"
+APP="${LARAVEL_APP_DIR:?set LARAVEL_APP_DIR to a Laravel app with laravel/reverb installed}"
 PORT="${CONF_PORT:-6001}"
 export CONF_TARGET=laravel-reverb CONF_HOST=127.0.0.1 CONF_PORT="$PORT"
 export CONF_APP_ID=conf-app CONF_APP_KEY=conf-key CONF_APP_SECRET=conf-secret

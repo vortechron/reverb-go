@@ -12,12 +12,14 @@ import { setup } from './helpers.mjs';
 
 const run = promisify(execFile);
 const script = fileURLToPath(new URL('../php/pusher.php', import.meta.url));
-const autoload = process.env.CONF_PHP_AUTOLOAD ?? '/Users/amiruladli/Projects/werewolf/vendor/autoload.php';
+const autoload = process.env.CONF_PHP_AUTOLOAD ?? '';
 
 const hasPhp = await run('php', ['-v']).then(() => true, () => false);
 const skip = !hasPhp
   ? 'php is not installed'
-  : !existsSync(autoload) ? `pusher-php-server not found at ${autoload} (set CONF_PHP_AUTOLOAD)` : false;
+  : autoload === ''
+    ? 'set CONF_PHP_AUTOLOAD to a vendor/autoload.php that has pusher/pusher-php-server'
+    : !existsSync(autoload) ? `pusher-php-server not found at ${autoload} (set CONF_PHP_AUTOLOAD)` : false;
 
 const ctx = setup();
 let n = 0;
