@@ -1,0 +1,16 @@
+{
+  "name": "reverb-go-conformance",
+  "private": true,
+  "type": "module",
+  "description": "Runs the same Pusher/Echo checks against Laravel Reverb and reverb-go.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 --test-timeout=90000 suite/connection.test.mjs suite/channels.test.mjs suite/api.test.mjs"
+  },
+  "dependencies": {
+    "echo1": "npm:laravel-echo@^1.16.0",
+    "echo2": "npm:laravel-echo@^2.0.0",
+    "pusher-js": "^8.3.0",
+    "ws": "^8.18.0"
+  }
+}
