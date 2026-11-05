@@ -31,6 +31,21 @@ type App struct {
 	MaxConnections  int // 0 means no limit
 	MaxMessageSize  int64
 	ClientEvents    ClientEvents
+
+	// Abuse limits. Zero means no limit.
+	MaxChannels        int // channels one connection may join
+	MaxPresenceMembers int // distinct users in one presence channel
+	MaxChannelDataSize int // bytes of channel_data in a subscribe
+	RateLimit          RateLimit
+}
+
+// RateLimit follows Reverb's rate_limiting option: at most MaxAttempts client
+// messages per Decay window, error 4301 above that, and optionally a disconnect.
+type RateLimit struct {
+	Enabled     bool
+	MaxAttempts int
+	Decay       time.Duration
+	Terminate   bool
 }
 
 // Registry looks apps up by key (WebSocket) or id (HTTP API). It is read-only after creation.

@@ -35,13 +35,16 @@ func newSocketID() string {
 }
 
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
+	if !s.begin() {
+		http.Error(w, "server is shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	defer s.wg.Done()
 	// Origin is checked against the app list below, not by the library.
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		return
 	}
-	s.wg.Add(1)
-	defer s.wg.Done()
 	app, ok := s.opts.Apps.ByKey(r.PathValue("key"))
 	if !ok {
 		refuse(r.Context(), conn, wire.CodeAppNotFound, "Application does not exist")
@@ -65,15 +68,9 @@ func refuse(ctx context.Context, conn *websocket.Conn, code int, message string)
 func (s *Server) run(parent context.Context, conn *websocket.Conn, app apps.App) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	go func() {
-		select {
-		case <-s.ctx.Done():
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-	sess := newSession(s, app, newSocketID())
-	sess.conn = conn
+	stop := context.AfterFunc(s.ctx, cancel) //nolint:contextcheck // server shutdown, not the request, ends this connection
+	defer stop()
+	sess := newSession(s, app, newSocketID(), conn, cancel)
 	conn.SetReadLimit(app.MaxMessageSize)
 	if !sess.hub.TryAdd(sess, app.MaxConnections) {
 		refuse(parent, conn, wire.CodeOverQuota, "Application is over connection quota")

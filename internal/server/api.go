@@ -27,12 +27,15 @@ type call struct {
 	r     *http.Request
 }
 
-type apiHandler func(c *call) (status int, payload any)
-
-type apiError struct {
-	status  int
-	payload any
+// response is what an API handler returns.
+type response struct {
+	status int
+	body   any
 }
+
+func reply(status int, body any) response { return response{status: status, body: body} }
+
+type apiHandler func(c *call) response
 
 func (s *Server) routeAPI(mux *http.ServeMux, p string) {
 	mux.HandleFunc("POST "+p+"/apps/{appId}/events", s.api(s.events))
@@ -48,30 +51,38 @@ func (s *Server) routeAPI(mux *http.ServeMux, p string) {
 }
 
 // api wraps a handler with app lookup, body limit and signature check.
+// The deadlines are set on this request only, so WebSocket connections are not affected.
 func (s *Server) api(h apiHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		c, aerr := s.authenticate(w, r)
-		if aerr != nil {
-			writeJSON(w, aerr.status, aerr.payload)
+		rc := http.NewResponseController(w)
+		_ = rc.SetReadDeadline(time.Now().Add(s.opts.APIReadTimeout)) // not supported by every writer
+		c, fail := s.authenticate(w, r)
+		if fail != nil {
+			writeJSON(w, fail.status, fail.body)
 			return
 		}
-		status, payload := h(c)
-		writeJSON(w, status, payload)
+		_ = rc.SetWriteDeadline(time.Now().Add(s.opts.APIReadTimeout))
+		out := h(c)
+		writeJSON(w, out.status, out.body)
 	}
 }
 
-func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*call, *apiError) {
+func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*call, *response) {
 	app, ok := s.opts.Apps.ByID(r.PathValue("appId"))
 	if !ok {
-		return nil, &apiError{http.StatusNotFound, msg("No matching application for ID [" + r.PathValue("appId") + "].")}
+		return nil, &response{http.StatusNotFound, msg("No matching application for ID [" + r.PathValue("appId") + "].")}
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.opts.MaxRequestSize))
 	if err != nil {
-		return nil, &apiError{http.StatusRequestEntityTooLarge, msg("Request body too large.")}
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			return nil, &response{http.StatusRequestEntityTooLarge, msg("Request body too large.")}
+		}
+		return nil, &response{http.StatusRequestTimeout, msg("Could not read the request body in time.")}
 	}
 	query := r.URL.Query()
 	if err := s.verifySignature(app, r, query, body); err != nil {
-		return nil, &apiError{http.StatusUnauthorized, msg(err.Error())}
+		return nil, &response{http.StatusUnauthorized, msg(err.Error())}
 	}
 	return &call{app: app, hub: s.hubs[app.ID], query: query, body: body, r: r}, nil
 }
@@ -88,6 +99,9 @@ func (s *Server) verifySignature(app apps.App, r *http.Request, query url.Values
 	path := r.URL.EscapedPath()
 	if s.opts.Path != "" {
 		path = "/" + strings.TrimLeft(strings.TrimPrefix(path, s.opts.Path), "/")
+	}
+	if !equalStrings(query.Get("auth_key"), app.Key) {
+		return errors.New("Authentication key invalid.") //nolint:revive,staticcheck // message style mirrors Reverb.
 	}
 	want := broadcast.RequestSignature(app.Secret, r.Method, path, params, body)
 	if !equalStrings(want, query.Get("auth_signature")) {

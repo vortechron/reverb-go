@@ -12,6 +12,7 @@ const (
 	CodeAppNotFound    = 4001
 	CodeOverQuota      = 4004
 	CodeUnauthorized   = 4009
+	CodeOverCapacity   = 4100
 	CodeInvalidMessage = 4200
 	CodePongTimeout    = 4201
 	CodeRateLimit      = 4301

@@ -2,10 +2,12 @@ package hub_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/vortechron/reverb-go/internal/hub"
 	"github.com/vortechron/reverb-go/internal/wire"
@@ -49,8 +51,8 @@ func (f *fakeConn) last() string {
 
 func mustSub(t *testing.T, h *hub.Hub, c *fakeConn, ch, data string) {
 	t.Helper()
-	h.Add(c)
-	if err := h.Subscribe(c, ch, data); err != nil {
+	h.TryAdd(c, 0)
+	if err := h.Subscribe(c, ch, data, hub.Limits{}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -137,20 +139,25 @@ func TestPresenceSameUserTwoSocketsEmitsOnce(t *testing.T) {
 	}
 }
 
-func TestPresenceWithoutUserIDShowsEmptyList(t *testing.T) {
+func TestPresenceWithoutUserIDIsRejected(t *testing.T) {
 	h := hub.New()
 	a := newConn("1.1")
-	mustSub(t, h, a, "presence-r", `{"user_info":{}}`)
-	if !strings.Contains(a.last(), `{\"presence\":{\"count\":0,\"ids\":[],\"hash\":{}}}`) {
-		t.Fatalf("got %s", a.last())
+	h.TryAdd(a, 0)
+	for _, data := range []string{"", `{"user_info":{}}`, `{"user_id":null}`} {
+		if err := h.Subscribe(a, "presence-r", data, hub.Limits{}); !errors.Is(err, hub.ErrMemberRequired) {
+			t.Fatalf("channel_data %q: err = %v", data, err)
+		}
+	}
+	if _, ok := h.Channel("presence-r"); ok {
+		t.Fatal("a rejected subscribe must not leave a channel behind")
 	}
 }
 
 func TestSubscribeRejectsBadChannelData(t *testing.T) {
 	h := hub.New()
 	a := newConn("1.1")
-	h.Add(a)
-	if err := h.Subscribe(a, "presence-r", "{not json"); err == nil {
+	h.TryAdd(a, 0)
+	if err := h.Subscribe(a, "presence-r", "{not json", hub.Limits{}); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -238,6 +245,8 @@ func TestClientEventFrameCarriesUserID(t *testing.T) {
 func TestKindOfChannel(t *testing.T) {
 	cases := map[string]struct{ presence, private, cache bool }{
 		"news": {}, "private-a": {private: true}, "presence-a": {private: true, presence: true},
+		// Reverb matches the prefix without the dash, so these need auth too.
+		"privatefoo": {private: true}, "presencefoo": {private: true, presence: true}, "cachefoo": {cache: true},
 		"cache-a": {cache: true}, "private-cache-a": {private: true, cache: true},
 		"presence-cache-a": {private: true, presence: true, cache: true},
 	}
@@ -302,4 +311,126 @@ func TestPublishNoCacheKeepsServerEventCached(t *testing.T) {
 	if late.last() != string(server) {
 		t.Fatalf("late joiner got %s, want the server event", late.last())
 	}
+}
+
+func TestResubscribeWithOtherUserRemovesTheOldUser(t *testing.T) {
+	h := hub.New()
+	watcher, mover := newConn("1.1"), newConn("2.2")
+	mustSub(t, h, watcher, "presence-r", alice)
+	mustSub(t, h, mover, "presence-r", `{"user_id":"7"}`)
+	watcher.got = nil
+	if err := h.Subscribe(mover, "presence-r", `{"user_id":"8"}`, hub.Limits{}); err != nil {
+		t.Fatal(err)
+	}
+	frames := strings.Join(watcher.frames(), "\n")
+	if !strings.Contains(frames, `member_removed","data":"{\"user_id\":\"7\"}`) ||
+		!strings.Contains(frames, `member_added`) {
+		t.Fatalf("watcher saw:\n%s", frames)
+	}
+	if info, _ := h.Channel("presence-r"); info.UserCount != 2 {
+		t.Fatalf("user count = %d, want 2", info.UserCount)
+	}
+}
+
+func TestResubscribeWithSameUserEmitsNothing(t *testing.T) {
+	h := hub.New()
+	watcher, other := newConn("1.1"), newConn("2.2")
+	mustSub(t, h, watcher, "presence-r", alice)
+	mustSub(t, h, other, "presence-r", `{"user_id":"7"}`)
+	watcher.got = nil
+	if err := h.Subscribe(other, "presence-r", `{"user_id":"7","user_info":{"n":1}}`, hub.Limits{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(watcher.frames()) != 0 {
+		t.Fatalf("watcher saw %v", watcher.frames())
+	}
+}
+
+func TestResubscribeKeepsUserWhenAnotherSocketHoldsIt(t *testing.T) {
+	h := hub.New()
+	watcher, a, b := newConn("1.1"), newConn("2.2"), newConn("3.3")
+	mustSub(t, h, watcher, "presence-r", alice)
+	mustSub(t, h, a, "presence-r", `{"user_id":"7"}`)
+	mustSub(t, h, b, "presence-r", `{"user_id":"7"}`)
+	watcher.got = nil
+	if err := h.Subscribe(a, "presence-r", `{"user_id":"9"}`, hub.Limits{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(watcher.frames(), ""), "member_removed") {
+		t.Fatal("user 7 is still connected through another socket")
+	}
+}
+
+func TestSubscribeEnforcesLimits(t *testing.T) {
+	h := hub.New()
+	a, b, c := newConn("1.1"), newConn("2.2"), newConn("3.3")
+	lim := hub.Limits{MaxChannels: 2, MaxMembers: 1}
+	h.TryAdd(a, 0)
+	h.TryAdd(b, 0)
+	h.TryAdd(c, 0)
+	for _, ch := range []string{"one", "two"} {
+		if err := h.Subscribe(a, ch, "", lim); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.Subscribe(a, "two", "", lim); err != nil {
+		t.Fatalf("re-subscribing to a joined channel is not a new channel: %v", err)
+	}
+	if err := h.Subscribe(a, "three", "", lim); !errors.Is(err, hub.ErrTooManyChannels) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, ok := h.Channel("three"); ok {
+		t.Fatal("rejected channel must not exist")
+	}
+	if err := h.Subscribe(b, "presence-r", alice, lim); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Subscribe(c, "presence-r", `{"user_id":"2"}`, lim); !errors.Is(err, hub.ErrChannelFull) {
+		t.Fatalf("err = %v", err)
+	}
+	// the same user on another socket is not a new member
+	if err := h.Subscribe(c, "presence-r", alice, lim); err != nil {
+		t.Fatalf("same user must be allowed: %v", err)
+	}
+}
+
+type blockingConn struct {
+	*fakeConn
+	release chan struct{}
+	entered chan struct{}
+}
+
+func (b *blockingConn) Send(frame []byte) {
+	select {
+	case b.entered <- struct{}{}:
+	default:
+	}
+	<-b.release
+	b.fakeConn.Send(frame)
+}
+
+func TestPublishDoesNotHoldTheHubLockWhileSending(t *testing.T) {
+	h := hub.New()
+	slow := &blockingConn{fakeConn: newConn("1.1"), release: make(chan struct{}), entered: make(chan struct{}, 1)}
+	h.TryAdd(slow, 0)
+	close(slow.release) // let the subscribe frames through
+	if err := h.Subscribe(slow, "news", "", hub.Limits{}); err != nil {
+		t.Fatal(err)
+	}
+	slow.release = make(chan struct{})
+	<-slow.entered // drain the first signal, if any
+	go h.Publish("news", wire.Event("e", "news", "{}"), "")
+	select {
+	case <-slow.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("publish never reached the connection")
+	}
+	done := make(chan struct{})
+	go func() { _ = h.ConnectionCount(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the hub lock was held while sending to a slow connection")
+	}
+	close(slow.release)
 }

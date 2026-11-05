@@ -12,20 +12,22 @@ const (
 	kindCache
 )
 
-// KindOf classifies a channel by its prefix.
+// KindOf classifies a channel by its prefix. It follows Reverb's ChannelBroker,
+// which tests the prefix without the dash: "privatefoo" needs auth like "private-foo".
 func KindOf(name string) Kind {
-	var k Kind
 	switch {
-	case strings.HasPrefix(name, "presence-"):
-		k = kindPrivate | kindPresence
-	case strings.HasPrefix(name, "private-"):
-		k = kindPrivate
+	case strings.HasPrefix(name, "private-cache-"):
+		return kindPrivate | kindCache
+	case strings.HasPrefix(name, "presence-cache-"):
+		return kindPrivate | kindPresence | kindCache
+	case strings.HasPrefix(name, "cache"):
+		return kindCache
+	case strings.HasPrefix(name, "private"):
+		return kindPrivate
+	case strings.HasPrefix(name, "presence"):
+		return kindPrivate | kindPresence
 	}
-	if strings.HasPrefix(name, "cache-") || strings.HasPrefix(name, "private-cache-") ||
-		strings.HasPrefix(name, "presence-cache-") {
-		k |= kindCache
-	}
-	return k
+	return 0
 }
 
 // NeedsAuth is true for private and presence channels.

@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"context"
 	"net/http"
 	"regexp"
 	"strings"
@@ -285,4 +286,131 @@ func TestConcurrentConnectsNeverExceedMaxConnections(t *testing.T) {
 	if n := h.srv.ConnectionCount(testCreds.AppID); n > limit {
 		t.Fatalf("connection count %d above limit", n)
 	}
+}
+
+func TestSubscribeLimitsAndCodes(t *testing.T) {
+	h := newHarness(t, func(a *apps.App) {
+		a.MaxChannels = 2
+		a.MaxPresenceMembers = 1
+		a.MaxChannelDataSize = 120
+	})
+	c := h.connect(t)
+	c.subscribeOK("one", "", "")
+	c.subscribeOK("two", "", "")
+	c.subscribe("three", "", "")
+	c.expectError(4100) // over the channel cap
+
+	a, b := h.connect(t), h.connect(t)
+	aa, ad := h.presence(t, a, 1, nil)
+	a.subscribeOK("presence-r", aa, ad)
+	ba, bd := h.presence(t, b, 2, nil)
+	b.subscribe("presence-r", ba, bd)
+	b.expectError(4100) // presence channel is full
+
+	big := h.connect(t)
+	ga, gd := h.presence(t, big, 3, map[string]string{"bio": strings.Repeat("x", 200)})
+	big.subscribe("presence-other", ga, gd)
+	big.expectError(4200) // channel_data too large
+}
+
+func TestPresenceSubscribeNeedsChannelData(t *testing.T) {
+	h := newHarness(t)
+	c := h.connect(t)
+	c.subscribe("presence-r", h.auth(t, c, "presence-r"), "") // signed, but no channel_data
+	c.expectError(4009)
+	c.subscribe("presence-r", h.auth(t, c, "presence-r"), `{"user_info":{}}`)
+	c.expectError(4009)
+}
+
+func TestPrefixWithoutDashStillNeedsAuth(t *testing.T) {
+	h := newHarness(t)
+	c := h.connect(t)
+	c.subscribe("privatefoo", "", "")
+	c.expectError(4009)
+}
+
+func TestMessageRateLimit(t *testing.T) {
+	h := newHarness(t, func(a *apps.App) {
+		a.RateLimit = apps.RateLimit{Enabled: true, MaxAttempts: 5, Decay: time.Minute}
+	})
+	c := h.connect(t)
+	for range 5 {
+		c.send(map[string]string{"event": "pusher:ping"})
+		if f := c.read(); f.Event != "pusher:pong" {
+			t.Fatalf("frame = %+v", f)
+		}
+	}
+	c.send(map[string]string{"event": "pusher:ping"})
+	c.expectError(4301)
+	c.send(map[string]string{"event": "pusher:ping"})
+	c.expectError(4301) // still limited in the same window
+}
+
+func TestRateLimitCanTerminate(t *testing.T) {
+	h := newHarness(t, func(a *apps.App) {
+		a.RateLimit = apps.RateLimit{Enabled: true, MaxAttempts: 1, Decay: time.Minute, Terminate: true}
+	})
+	c := h.connect(t)
+	c.send(map[string]string{"event": "pusher:ping"})
+	c.read()
+	c.send(map[string]string{"event": "pusher:ping"})
+	c.expectError(4301)
+	if _, err := c.tryRead(2 * time.Second); err == nil {
+		t.Fatal("connection should be closed")
+	}
+}
+
+func TestRateLimitWindowResets(t *testing.T) {
+	h := newHarness(t, func(a *apps.App) {
+		a.RateLimit = apps.RateLimit{Enabled: true, MaxAttempts: 1, Decay: 150 * time.Millisecond}
+	})
+	c := h.connect(t)
+	c.send(map[string]string{"event": "pusher:ping"})
+	c.read()
+	time.Sleep(250 * time.Millisecond)
+	c.send(map[string]string{"event": "pusher:ping"})
+	if f := c.read(); f.Event != "pusher:pong" {
+		t.Fatalf("frame = %+v", f)
+	}
+}
+
+func TestNewConnectionsAreRefusedAfterClose(t *testing.T) {
+	h := newHarness(t)
+	h.connect(t)
+	h.srv.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, h.wsURL(h.app.Key), nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err == nil {
+		_ = conn.CloseNow()
+		t.Fatal("a connection was accepted after Close")
+	}
+	if resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("response = %+v, want 503", resp)
+	}
+}
+
+func TestCloseWhileConnectingDoesNotRace(t *testing.T) {
+	h := newHarness(t)
+	var wg sync.WaitGroup
+	for range 30 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			conn, resp, err := websocket.Dial(ctx, h.wsURL(h.app.Key), nil)
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			if err == nil {
+				_ = conn.CloseNow()
+			}
+		}()
+	}
+	h.srv.Close()
+	wg.Wait()
 }

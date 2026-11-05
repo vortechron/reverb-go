@@ -23,6 +23,10 @@ type session struct {
 	srv  *Server
 	hub  *hub.Hub
 	conn *websocket.Conn
+	// cancel stops the read and write loops at once. Only drop uses it.
+	cancel context.CancelFunc
+	// limiter belongs to the read goroutine.
+	limiter *limiter
 
 	out  chan []byte
 	done chan struct{}
@@ -35,10 +39,11 @@ type session struct {
 	pinged   atomic.Bool
 }
 
-func newSession(srv *Server, app apps.App, id string) *session {
+func newSession(srv *Server, app apps.App, id string, conn *websocket.Conn, cancel context.CancelFunc) *session {
 	s := &session{
-		id: id, app: app, srv: srv, hub: srv.hubs[app.ID],
+		id: id, app: app, srv: srv, hub: srv.hubs[app.ID], conn: conn, cancel: cancel,
 		out: make(chan []byte, srv.opts.SendQueue), done: make(chan struct{}),
+		limiter: newLimiter(app.RateLimit),
 	}
 	s.touch()
 	return s
@@ -47,15 +52,18 @@ func newSession(srv *Server, app apps.App, id string) *session {
 // ID implements hub.Conn.
 func (s *session) ID() string { return s.id }
 
-// Send queues a frame. It never blocks: a client whose queue is full is dropped.
+// Send queues a frame. It never blocks and never touches the socket: a client
+// whose queue is full is marked for removal and the writer or reader cleans up.
 func (s *session) Send(frame []byte) {
+	select {
+	case <-s.done:
+		return
+	default:
+	}
 	select {
 	case s.out <- frame:
 	default:
-		s.srv.log.Warn("dropping slow consumer", "socket_id", s.id)
-		s.Close(int(websocket.StatusPolicyViolation), "slow consumer")
-		// The writer may be stuck in a blocked write, so cut the socket now.
-		_ = s.conn.CloseNow()
+		s.drop("slow consumer")
 	}
 }
 
@@ -64,6 +72,16 @@ func (s *session) Close(code int, reason string) {
 	s.closeOnce.Do(func() {
 		s.code, s.reason = code, reason
 		close(s.done)
+	})
+}
+
+// drop ends the session now, without flushing, because the client cannot keep up.
+func (s *session) drop(reason string) {
+	s.closeOnce.Do(func() {
+		s.srv.log.Warn("dropping connection", "socket_id", s.id, "reason", reason)
+		s.code, s.reason = int(websocket.StatusPolicyViolation), reason
+		close(s.done)
+		s.cancel() // unblocks a stuck write and the read loop; does not wait for anything
 	})
 }
 

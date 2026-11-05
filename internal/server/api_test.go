@@ -1,9 +1,11 @@
 package server_test
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -309,5 +311,84 @@ func TestSlowConsumerIsDisconnected(t *testing.T) {
 	}
 	if !closed {
 		t.Fatal("slow consumer was never disconnected")
+	}
+}
+
+func TestAPIChecksAuthKeyAgainstTheApp(t *testing.T) {
+	h := newHarness(t)
+	body := `{"name":"e","channel":"c","data":"d"}`
+	code, _ := h.call(t, apiCall{method: "POST", path: "/apps/app1/events", body: body, tamper: func(q url.Values) {
+		q.Set("auth_key", "someone-elses-key")
+		q.Set("auth_signature", broadcast.RequestSignature(testCreds.Secret, "POST", "/apps/app1/events",
+			withoutSignature(q), []byte(body)))
+	}})
+	if code != 401 {
+		t.Fatalf("status = %d, want 401", code)
+	}
+}
+
+func withoutSignature(q url.Values) url.Values {
+	out := url.Values{}
+	for k, v := range q {
+		if k != "auth_signature" && k != "body_md5" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func TestAPILimitsOnEventsAndBatches(t *testing.T) {
+	h := newHarness(t)
+	many := make([]string, 101)
+	for i := range many {
+		many[i] = "c" + strconv.Itoa(i)
+	}
+	tooManyChannels, _ := json.Marshal(map[string]any{"name": "e", "channels": many, "data": "d"})
+	longName, _ := json.Marshal(map[string]any{"name": strings.Repeat("n", 201), "channel": "c", "data": "d"})
+	items := make([]map[string]string, 11)
+	for i := range items {
+		items[i] = map[string]string{"name": "e", "channel": "c", "data": "d"}
+	}
+	bigBatch, _ := json.Marshal(map[string]any{"batch": items})
+	cases := map[string]struct{ endpoint, body string }{
+		"101 channels": {"events", string(tooManyChannels)},
+		"long name":    {"events", string(longName)},
+		"11 events":    {"batch_events", string(bigBatch)},
+	}
+	for name, c := range cases {
+		if code, _ := h.post(t, c.endpoint, c.body); code != 422 {
+			t.Errorf("%s: status = %d, want 422", name, code)
+		}
+	}
+	ten := items[:10]
+	okBatch, _ := json.Marshal(map[string]any{"batch": ten})
+	if code, _ := h.post(t, "batch_events", string(okBatch)); code != 200 {
+		t.Errorf("10 events: status = %d, want 200", code)
+	}
+}
+
+func TestAPIRequestsHaveAReadDeadline(t *testing.T) {
+	h := newHarnessOpts(t, server.Options{APIReadTimeout: 200 * time.Millisecond})
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", strings.TrimPrefix(h.http.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	// Announce 50 bytes, send 1, then go quiet.
+	_, _ = conn.Write([]byte("POST /apps/app1/events HTTP/1.1\r\nHost: x\r\nContent-Length: 50\r\n\r\n{"))
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, "HTTP/1.1 408") {
+		t.Fatalf("got %q err=%v, want a 408 response", line, err)
+	}
+}
+
+func TestWebSocketsAreNotCutByTheAPIDeadline(t *testing.T) {
+	h := newHarnessOpts(t, server.Options{APIReadTimeout: 100 * time.Millisecond})
+	c := h.connect(t)
+	time.Sleep(400 * time.Millisecond)
+	c.send(map[string]string{"event": "pusher:ping"})
+	if f := c.read(); f.Event != "pusher:pong" {
+		t.Fatalf("frame = %+v", f)
 	}
 }

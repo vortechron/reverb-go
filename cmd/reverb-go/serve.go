@@ -41,7 +41,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, log *slog.Lo
 		return err
 	}
 	defer cleanup()
-	httpSrv := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	httpSrv := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- httpSrv.Serve(ln) }()
 	log.Info("reverb-go listening", "addr", ln.Addr().String())

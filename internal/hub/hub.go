@@ -1,32 +1,36 @@
 // Package hub keeps channel state for one app: who is subscribed, who is
-// present, and the last event of cache channels. It never blocks on a client.
+// present, and the last event of cache channels.
+//
+// The hub never sends to a client while holding its lock, except the single
+// frame that must reach a joining client before anything else. Fan-out runs on
+// an immutable snapshot of the subscribers.
 package hub
 
 import (
-	"sort"
+	"errors"
 	"sync"
 
 	"github.com/vortechron/reverb-go/internal/wire"
 )
+
+// Errors returned by Subscribe. The server maps them to pusher:error codes.
+var (
+	ErrTooManyChannels = errors.New("hub: connection is subscribed to too many channels")
+	ErrChannelFull     = errors.New("hub: presence channel is full")
+	ErrMemberRequired  = errors.New("hub: presence channels need channel_data with a user_id")
+)
+
+// Limits cap what one subscribe may do. Zero means no limit.
+type Limits struct {
+	MaxChannels int // channels per connection
+	MaxMembers  int // distinct users per presence channel
+}
 
 // Conn is a connected client. Send must not block; a slow client is dropped by its owner.
 type Conn interface {
 	ID() string
 	Send(frame []byte)
 	Close(code int, reason string)
-}
-
-type sub struct {
-	conn   Conn
-	member Member
-	seq    uint64
-}
-
-type channel struct {
-	name   string
-	kind   Kind
-	subs   map[string]*sub
-	cached []byte
 }
 
 type entry struct {
@@ -37,7 +41,6 @@ type entry struct {
 // Hub holds the state for one app.
 type Hub struct {
 	mu       sync.Mutex
-	seq      uint64
 	conns    map[string]*entry
 	channels map[string]*channel
 }
@@ -47,11 +50,25 @@ func New() *Hub {
 	return &Hub{conns: map[string]*entry{}, channels: map[string]*channel{}}
 }
 
-// Add registers a connection.
-func (h *Hub) Add(c Conn) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.conns[c.ID()] = &entry{conn: c, channels: map[string]struct{}{}}
+// fanout is a frame and the connections that must receive it, sent after unlock.
+type fanout struct {
+	targets []Conn
+	frame   []byte
+	except  string
+}
+
+func (f fanout) send() {
+	for _, c := range f.targets {
+		if c.ID() != f.except {
+			c.Send(f.frame)
+		}
+	}
+}
+
+func sendAll(list []fanout) {
+	for _, f := range list {
+		f.send()
+	}
 }
 
 // TryAdd registers a connection unless the hub already holds limit connections
@@ -70,83 +87,97 @@ func (h *Hub) TryAdd(c Conn, limit int) bool {
 // Remove forgets a connection and leaves every channel it joined.
 func (h *Hub) Remove(c Conn) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.conns[c.ID()]
 	if !ok {
+		h.mu.Unlock()
 		return
 	}
+	var out []fanout
 	for name := range e.channels {
-		h.leaveLocked(c, name)
+		out = append(out, h.leaveLocked(c, name)...)
 	}
 	delete(h.conns, c.ID())
+	h.mu.Unlock()
+	sendAll(out)
 }
 
 // Subscribe joins a channel. Credentials must be checked by the caller.
-// It sends subscription_succeeded (and the cache frame) to the joiner.
-func (h *Hub) Subscribe(c Conn, name, channelData string) error {
+// It sends subscription_succeeded (and the cache frame) to the joiner first.
+func (h *Hub) Subscribe(c Conn, name, channelData string, lim Limits) error {
 	member, err := ParseMember(channelData)
 	if err != nil {
 		return err
 	}
+	kind := KindOf(name)
+	if kind.IsPresence() && !member.HasUser() {
+		return ErrMemberRequired
+	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.conns[c.ID()]
 	if !ok {
+		h.mu.Unlock()
 		return nil
 	}
-	ch := h.channelLocked(name)
-	_, rejoin := ch.subs[c.ID()]
-	newUser := !rejoin && (!member.HasUser() || !ch.hasUser(member.UserID))
-	h.seq++
-	ch.subs[c.ID()] = &sub{conn: c, member: member, seq: h.seq}
-	e.channels[name] = struct{}{}
-	if ch.kind.IsPresence() && newUser {
-		ch.broadcast(wire.Internal("member_added", name, member.Raw), c.ID())
+	ch, created := h.channelLocked(name)
+	if err := h.admitLocked(e, ch, member, lim); err != nil {
+		if created {
+			delete(h.channels, name)
+		}
+		h.mu.Unlock()
+		return err
 	}
+	out := ch.join(c, member)
+	e.channels[name] = struct{}{}
 	c.Send(wire.Internal("subscription_succeeded", name, ch.successData()))
-	if ch.kind.IsCache() {
+	if kind.IsCache() {
 		ch.replay(c)
+	}
+	h.mu.Unlock()
+	sendAll(out)
+	return nil
+}
+
+func (h *Hub) admitLocked(e *entry, ch *channel, m Member, lim Limits) error {
+	_, joined := ch.subs[e.conn.ID()]
+	if !joined && lim.MaxChannels > 0 && len(e.channels) >= lim.MaxChannels {
+		return ErrTooManyChannels
+	}
+	if ch.kind.IsPresence() && lim.MaxMembers > 0 && ch.users[m.UserID] == nil && len(ch.users) >= lim.MaxMembers {
+		return ErrChannelFull
 	}
 	return nil
 }
 
-func (h *Hub) channelLocked(name string) *channel {
+func (h *Hub) channelLocked(name string) (ch *channel, created bool) {
 	ch, ok := h.channels[name]
 	if !ok {
-		ch = &channel{name: name, kind: KindOf(name), subs: map[string]*sub{}}
+		ch = newChannel(name)
 		h.channels[name] = ch
 	}
-	return ch
+	return ch, !ok
 }
 
 // Unsubscribe leaves one channel.
 func (h *Hub) Unsubscribe(c Conn, name string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.leaveLocked(c, name)
+	out := h.leaveLocked(c, name)
+	h.mu.Unlock()
+	sendAll(out)
 }
 
-func (h *Hub) leaveLocked(c Conn, name string) {
+func (h *Hub) leaveLocked(c Conn, name string) []fanout {
 	ch, ok := h.channels[name]
 	if !ok {
-		return
+		return nil
 	}
-	s, ok := ch.subs[c.ID()]
-	if !ok {
-		return
-	}
-	delete(ch.subs, c.ID())
+	out := ch.leave(c)
 	if e, ok := h.conns[c.ID()]; ok {
 		delete(e.channels, name)
 	}
 	if len(ch.subs) == 0 {
 		delete(h.channels, name)
-		return
 	}
-	if ch.kind.IsPresence() && s.member.HasUser() && !ch.hasUser(s.member.UserID) {
-		data := `{"user_id":` + string(s.member.RawUserID) + `}`
-		ch.broadcast(wire.Internal("member_removed", name, data), "")
-	}
+	return out
 }
 
 // Publish sends a ready-made frame to a channel, skipping one socket id.
@@ -164,15 +195,17 @@ func (h *Hub) PublishNoCache(name string, frame []byte, exceptID string) {
 
 func (h *Hub) publish(name string, frame []byte, exceptID string, remember bool) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	ch, ok := h.channels[name]
 	if !ok {
+		h.mu.Unlock()
 		return
 	}
 	if remember && ch.kind.IsCache() {
 		ch.cached = frame
 	}
-	ch.broadcast(frame, exceptID)
+	targets := ch.conns()
+	h.mu.Unlock()
+	fanout{targets: targets, frame: frame, except: exceptID}.send()
 }
 
 // Member returns the subscription data of c on a channel.
@@ -212,14 +245,4 @@ func (h *Hub) ConnectionCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.conns)
-}
-
-// sortedNames returns channel names in a stable order.
-func (h *Hub) sortedNames() []string {
-	names := make([]string, 0, len(h.channels))
-	for n := range h.channels {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
 }

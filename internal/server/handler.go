@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/vortechron/reverb-go/broadcast"
 	"github.com/vortechron/reverb-go/internal/hub"
@@ -23,6 +26,13 @@ type incoming struct {
 // handle processes one text frame. Every failure becomes a pusher:error frame.
 func (s *session) handle(raw []byte) {
 	s.touch()
+	if !s.limiter.allow(time.Now()) {
+		s.Send(wire.Error(wire.CodeRateLimit, "Rate limit exceeded"))
+		if s.app.RateLimit.Terminate {
+			s.Close(int(websocket.StatusPolicyViolation), "rate limit exceeded")
+		}
+		return
+	}
 	var m incoming
 	if err := json.Unmarshal(raw, &m); err != nil || m.Event == "" {
 		s.Send(wire.Error(wire.CodeInvalidMessage, "Invalid message format"))
@@ -73,7 +83,7 @@ type subscribePayload struct {
 }
 
 func (s *session) subscribe(data json.RawMessage) error {
-	name, auth, channelData, err := parseSubscribe(data)
+	name, auth, channelData, err := parseSubscribe(data, s.app.MaxChannelDataSize)
 	if err != nil {
 		return err
 	}
@@ -81,13 +91,26 @@ func (s *session) subscribe(data json.RawMessage) error {
 		s.Send(wire.Error(wire.CodeUnauthorized, "Connection is unauthorized"))
 		return nil
 	}
-	if err := s.hub.Subscribe(s, name, channelData); err != nil {
+	lim := hub.Limits{MaxChannels: s.app.MaxChannels, MaxMembers: s.app.MaxPresenceMembers}
+	return s.reportSubscribe(s.hub.Subscribe(s, name, channelData, lim))
+}
+
+// reportSubscribe turns hub errors into the pusher:error frames Pusher uses.
+func (s *session) reportSubscribe(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, hub.ErrTooManyChannels), errors.Is(err, hub.ErrChannelFull):
+		s.Send(wire.Error(wire.CodeOverCapacity, "Over capacity"))
+	case errors.Is(err, hub.ErrMemberRequired):
+		s.Send(wire.Error(wire.CodeUnauthorized, "Presence channels require channel_data with a user_id"))
+	default:
 		return errInvalid
 	}
 	return nil
 }
 
-func parseSubscribe(data json.RawMessage) (name, auth, channelData string, err error) {
+func parseSubscribe(data json.RawMessage, maxChannelData int) (name, auth, channelData string, err error) {
 	var p subscribePayload
 	if err := json.Unmarshal(data, &p); err != nil || p.Channel == nil || !broadcast.ValidChannelName(*p.Channel) {
 		return "", "", "", errInvalid
@@ -97,6 +120,9 @@ func parseSubscribe(data json.RawMessage) (name, auth, channelData string, err e
 	}
 	if channelData, err = optionalString(p.ChannelData); err != nil {
 		return "", "", "", err
+	}
+	if maxChannelData > 0 && len(channelData) > maxChannelData {
+		return "", "", "", errInvalid
 	}
 	if channelData != "" && !json.Valid([]byte(channelData)) {
 		return "", "", "", errInvalid
