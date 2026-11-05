@@ -1,0 +1,10 @@
+{
+  "name": "echo-page-example",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node server.mjs" },
+  "dependencies": {
+    "laravel-echo": "^2.0.0",
+    "pusher-js": "^8.3.0"
+  }
+}

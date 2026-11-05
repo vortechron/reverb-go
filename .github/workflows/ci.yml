@@ -38,3 +38,26 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: conformance/package-lock.json
+
+      - name: Install conformance dependencies
+        run: npm ci
+        working-directory: conformance
+
+      - name: Run the conformance suite against reverb-go
+        run: ./conformance/run-reverb-go.sh

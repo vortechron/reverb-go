@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>reverb-go Echo demo</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+    #status { font-weight: 600; }
+    #status[data-state="connected"] { color: #0a7d32; }
+    li { margin: .25rem 0; font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <h1>reverb-go Echo demo</h1>
+  <p>Connection: <span id="status" data-state="starting">starting</span></p>
+  <p>Channel: <code id="channel"></code> &middot; Socket id: <code id="socket">-</code></p>
+  <h2>Received events</h2>
+  <ul id="events"></ul>
+
+  <script src="/vendor/pusher.js"></script>
+  <script src="/vendor/echo.js"></script>
+  <script>
+    (async () => {
+      const cfg = await (await fetch('/config.json')).json();
+      const EchoClass = Echo.default ?? Echo;
+      const echo = new EchoClass({
+        broadcaster: 'reverb',
+        Pusher: window.Pusher,
+        key: cfg.key,
+        wsHost: cfg.wsHost,
+        wsPort: cfg.wsPort,
+        wssPort: cfg.wsPort,
+        forceTLS: false,
+        enabledTransports: ['ws', 'wss'],
+        disableStats: true,
+      });
+      const status = document.getElementById('status');
+      const show = (state) => { status.textContent = state; status.dataset.state = state; };
+      const connection = echo.connector.pusher.connection;
+      connection.bind('state_change', ({ current }) => {
+        show(current);
+        document.getElementById('socket').textContent = echo.socketId() ?? '-';
+      });
+      document.getElementById('channel').textContent = cfg.channel;
+      echo.channel(cfg.channel).listen('.DemoEvent', (payload) => {
+        const li = document.createElement('li');
+        li.textContent = `DemoEvent ${JSON.stringify(payload)}`;
+        document.getElementById('events').appendChild(li);
+      });
+    })();
+  </script>
+</body>
+</html>

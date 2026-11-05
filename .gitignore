@@ -1,5 +1,6 @@
 /reverb-go
 coverage.out
 node_modules/
+examples/*/node_modules/
 conformance/node_modules/
 *.log
