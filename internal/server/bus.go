@@ -30,3 +30,8 @@ func (s *Server) startBus() {}
 func (s *Server) publish(app apps.App, channel string, frame []byte, except string) {
 	s.hubs[app.ID].Publish(channel, frame, except)
 }
+
+// terminateUser closes every connection of a user on this node and on others.
+func (s *Server) terminateUser(app apps.App, userID string) {
+	s.hubs[app.ID].Terminate(userID)
+}

@@ -54,6 +54,8 @@ func (s *session) Send(frame []byte) {
 	default:
 		s.srv.log.Warn("dropping slow consumer", "socket_id", s.id)
 		s.Close(int(websocket.StatusPolicyViolation), "slow consumer")
+		// The writer may be stuck in a blocked write, so cut the socket now.
+		_ = s.conn.CloseNow()
 	}
 }
 
