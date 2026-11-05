@@ -54,6 +54,19 @@ func (h *Hub) Add(c Conn) {
 	h.conns[c.ID()] = &entry{conn: c, channels: map[string]struct{}{}}
 }
 
+// TryAdd registers a connection unless the hub already holds limit connections
+// (0 means no limit). The check and the insert happen under one lock, so
+// parallel connects cannot pass the limit together.
+func (h *Hub) TryAdd(c Conn, limit int) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if limit > 0 && len(h.conns) >= limit {
+		return false
+	}
+	h.conns[c.ID()] = &entry{conn: c, channels: map[string]struct{}{}}
+	return true
+}
+
 // Remove forgets a connection and leaves every channel it joined.
 func (h *Hub) Remove(c Conn) {
 	h.mu.Lock()
@@ -139,13 +152,24 @@ func (h *Hub) leaveLocked(c Conn, name string) {
 // Publish sends a ready-made frame to a channel, skipping one socket id.
 // Cache channels remember the frame. Unknown channels are ignored.
 func (h *Hub) Publish(name string, frame []byte, exceptID string) {
+	h.publish(name, frame, exceptID, true)
+}
+
+// PublishNoCache sends a frame without touching the cache of cache channels.
+// Client events (whispers) use it, so a subscriber cannot overwrite the event
+// that later subscribers receive.
+func (h *Hub) PublishNoCache(name string, frame []byte, exceptID string) {
+	h.publish(name, frame, exceptID, false)
+}
+
+func (h *Hub) publish(name string, frame []byte, exceptID string, remember bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	ch, ok := h.channels[name]
 	if !ok {
 		return
 	}
-	if ch.kind.IsCache() {
+	if remember && ch.kind.IsCache() {
 		ch.cached = frame
 	}
 	ch.broadcast(frame, exceptID)

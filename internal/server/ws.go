@@ -51,11 +51,6 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 		refuse(r.Context(), conn, wire.CodeUnauthorized, "Origin not allowed")
 		return
 	}
-	h := s.hubs[app.ID]
-	if app.MaxConnections > 0 && h.ConnectionCount() >= app.MaxConnections {
-		refuse(r.Context(), conn, wire.CodeOverQuota, "Application is over connection quota")
-		return
-	}
 	s.run(r.Context(), conn, app)
 }
 
@@ -80,7 +75,10 @@ func (s *Server) run(parent context.Context, conn *websocket.Conn, app apps.App)
 	sess := newSession(s, app, newSocketID())
 	sess.conn = conn
 	conn.SetReadLimit(app.MaxMessageSize)
-	sess.hub.Add(sess)
+	if !sess.hub.TryAdd(sess, app.MaxConnections) {
+		refuse(parent, conn, wire.CodeOverQuota, "Application is over connection quota")
+		return
+	}
 	sess.Send(wire.Established(sess.id, int(app.ActivityTimeout.Seconds())))
 
 	writerDone := make(chan struct{})

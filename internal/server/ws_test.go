@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -230,5 +232,57 @@ func TestOversizedMessageClosesConnection(t *testing.T) {
 	c.sendRaw(`{"event":"client-x","data":"` + strings.Repeat("a", 500) + `"}`)
 	if _, err := c.tryRead(2 * time.Second); err == nil {
 		t.Fatal("connection should be closed")
+	}
+}
+
+func TestWhisperOnCacheChannelDoesNotReplaceCachedServerEvent(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.connect(t), h.connect(t)
+	a.subscribeOK("private-cache-x", h.auth(t, a, "private-cache-x"), "")
+	a.read() // cache_miss
+	b.subscribeOK("private-cache-x", h.auth(t, b, "private-cache-x"), "")
+	b.read() // cache_miss
+	if code, _ := h.post(t, "events", `{"name":"price","channel":"private-cache-x","data":"{\"p\":1}"}`); code != 200 {
+		t.Fatalf("status %d", code)
+	}
+	a.read()
+	b.read()
+	a.send(map[string]any{"event": "client-evil", "channel": "private-cache-x", "data": map[string]int{"p": 999}})
+	if f := b.read(); f.Event != "client-evil" {
+		t.Fatalf("b got %+v", f)
+	}
+	late := h.connect(t)
+	late.subscribeOK("private-cache-x", h.auth(t, late, "private-cache-x"), "")
+	if f := late.read(); f.Event != "price" {
+		t.Fatalf("late subscriber got %+v, want the server event", f)
+	}
+}
+
+func TestConcurrentConnectsNeverExceedMaxConnections(t *testing.T) {
+	const limit, tries = 5, 40
+	h := newHarness(t, func(a *apps.App) { a.MaxConnections = limit })
+	var wg sync.WaitGroup
+	var accepted, refused atomic.Int32
+	for range tries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c := h.dial(t)
+			f, err := c.tryRead(5 * time.Second)
+			switch {
+			case err != nil:
+			case f.Event == "pusher:connection_established":
+				accepted.Add(1)
+			case f.Event == "pusher:error":
+				refused.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if accepted.Load() != limit || refused.Load() != tries-limit {
+		t.Fatalf("accepted %d refused %d, want %d and %d", accepted.Load(), refused.Load(), limit, tries-limit)
+	}
+	if n := h.srv.ConnectionCount(testCreds.AppID); n > limit {
+		t.Fatalf("connection count %d above limit", n)
 	}
 }

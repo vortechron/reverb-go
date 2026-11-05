@@ -2,6 +2,7 @@ package hub_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -255,5 +256,50 @@ func TestTerminateEmptyUserClosesNobody(t *testing.T) {
 	h.Terminate("")
 	if a.closed != 0 {
 		t.Fatal("anonymous connections must survive an empty user id")
+	}
+}
+
+func TestTryAddNeverExceedsLimitUnderConcurrency(t *testing.T) {
+	h := hub.New()
+	const limit, tries = 10, 200
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	accepted := 0
+	for i := range tries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if h.TryAdd(newConn(fmt.Sprintf("%d.1", i)), limit) {
+				mu.Lock()
+				accepted++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if accepted != limit || h.ConnectionCount() != limit {
+		t.Fatalf("accepted %d, count %d, want %d", accepted, h.ConnectionCount(), limit)
+	}
+}
+
+func TestTryAddWithZeroLimitIsUnlimited(t *testing.T) {
+	h := hub.New()
+	for i := range 50 {
+		if !h.TryAdd(newConn(fmt.Sprintf("%d.2", i)), 0) {
+			t.Fatal("limit 0 means unlimited")
+		}
+	}
+}
+
+func TestPublishNoCacheKeepsServerEventCached(t *testing.T) {
+	h := hub.New()
+	a, late := newConn("1.1"), newConn("2.2")
+	mustSub(t, h, a, "private-cache-x", "")
+	server := wire.Event("price", "private-cache-x", `{"p":1}`)
+	h.Publish("private-cache-x", server, "")
+	h.PublishNoCache("private-cache-x", []byte(`{"event":"client-x"}`), "1.1")
+	mustSub(t, h, late, "private-cache-x", "")
+	if late.last() != string(server) {
+		t.Fatalf("late joiner got %s, want the server event", late.last())
 	}
 }

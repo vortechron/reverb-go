@@ -34,7 +34,7 @@ func (s *session) handleClientEvent(m incoming) error {
 		userID = member.RawUserID
 	}
 	frame := hub.ClientEventFrame(m.Event, channel, nullToEmpty(m.Data), userID)
-	s.srv.publish(s.app, channel, frame, s.id)
+	s.srv.publishClientEvent(s.app, channel, frame, s.id)
 	return nil
 }
 

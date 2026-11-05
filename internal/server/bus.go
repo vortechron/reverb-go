@@ -14,7 +14,9 @@ type Message struct {
 	Name   string `json:"channel,omitempty"`
 	Frame  []byte `json:"frame,omitempty"`
 	Except string `json:"except,omitempty"`
-	UserID string `json:"user_id,omitempty"`
+	// NoCache marks client events, which must not replace a cache channel's cached event.
+	NoCache bool   `json:"no_cache,omitempty"`
+	UserID  string `json:"user_id,omitempty"`
 }
 
 // Bus moves Messages between nodes. Implementations must deliver a node's own
@@ -24,14 +26,63 @@ type Bus interface {
 	Subscribe(ctx context.Context, handle func(Message)) error
 }
 
-func (s *Server) startBus() {}
+const (
+	kindEvent     = "event"
+	kindTerminate = "terminate"
+)
+
+// startBus listens for messages from other nodes.
+func (s *Server) startBus() {
+	if s.opts.Bus == nil {
+		return
+	}
+	err := s.opts.Bus.Subscribe(s.ctx, s.fromBus)
+	if err != nil {
+		s.log.Error("bus subscribe failed", "error", err)
+	}
+}
+
+func (s *Server) fromBus(m Message) {
+	h, ok := s.hubs[m.AppID]
+	if m.Node == s.nodeID || !ok {
+		return
+	}
+	switch m.Kind {
+	case kindEvent:
+		if m.NoCache {
+			h.PublishNoCache(m.Name, m.Frame, m.Except)
+			return
+		}
+		h.Publish(m.Name, m.Frame, m.Except)
+	case kindTerminate:
+		h.Terminate(m.UserID)
+	}
+}
+
+func (s *Server) toBus(m Message) {
+	if s.opts.Bus == nil {
+		return
+	}
+	m.Node = s.nodeID
+	if err := s.opts.Bus.Publish(s.ctx, m); err != nil {
+		s.log.Error("bus publish failed", "error", err)
+	}
+}
 
 // publish delivers a frame to local subscribers and to other nodes.
 func (s *Server) publish(app apps.App, channel string, frame []byte, except string) {
 	s.hubs[app.ID].Publish(channel, frame, except)
+	s.toBus(Message{Kind: kindEvent, AppID: app.ID, Name: channel, Frame: frame, Except: except})
+}
+
+// publishClientEvent delivers a whisper. It is never cached.
+func (s *Server) publishClientEvent(app apps.App, channel string, frame []byte, except string) {
+	s.hubs[app.ID].PublishNoCache(channel, frame, except)
+	s.toBus(Message{Kind: kindEvent, AppID: app.ID, Name: channel, Frame: frame, Except: except, NoCache: true})
 }
 
 // terminateUser closes every connection of a user on this node and on others.
 func (s *Server) terminateUser(app apps.App, userID string) {
 	s.hubs[app.ID].Terminate(userID)
+	s.toBus(Message{Kind: kindTerminate, AppID: app.ID, UserID: userID})
 }
