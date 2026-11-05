@@ -46,7 +46,7 @@ func TestAuthorizePresenceRejectsMissingUserID(t *testing.T) {
 }
 
 func TestParseAuthRequestAcceptsFormBody(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/broadcasting/auth",
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/broadcasting/auth",
 		strings.NewReader("socket_id=1.2&channel_name=private-a"))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	got, err := broadcast.ParseAuthRequest(r)
@@ -59,7 +59,7 @@ func TestParseAuthRequestAcceptsFormBody(t *testing.T) {
 }
 
 func TestParseAuthRequestAcceptsJSONBody(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/api/broadcasting/auth",
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/broadcasting/auth",
 		strings.NewReader(`{"socket_id":"1.2","channel_name":"presence-b"}`))
 	r.Header.Set("Content-Type", "application/json")
 	got, err := broadcast.ParseAuthRequest(r)
@@ -80,7 +80,7 @@ func TestParseAuthRequestRejectsBadInput(t *testing.T) {
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(c.body))
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/x", strings.NewReader(c.body))
 			r.Header.Set("Content-Type", c.ctype)
 			if _, err := broadcast.ParseAuthRequest(r); err == nil {
 				t.Fatal("expected an error")
@@ -90,7 +90,7 @@ func TestParseAuthRequestRejectsBadInput(t *testing.T) {
 }
 
 func TestSocketIDFromRequestReadsEchoHeader(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/x", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/x", nil)
 	r.Header.Set("X-Socket-Id", "12.34")
 	if got := broadcast.SocketIDFromRequest(r); got != "12.34" {
 		t.Fatalf("got %q", got)
