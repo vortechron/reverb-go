@@ -160,6 +160,44 @@ A Go app must send exactly what Laravel would, or Echo listeners will not match:
 - Channel names keep their type prefix on the wire: `private-calls.5`, `presence-room.1`.
   Echo adds the prefix for you; Go code must write it.
 
+## Goravel glue: `reverb-go/goravel`
+
+`github.com/vortechron/reverb-go/goravel` wires the package above into a Goravel v1.18 app. The core
+(`broadcast`, the server) never imports Goravel.
+
+```go
+import reverbgo "github.com/vortechron/reverb-go/goravel"
+
+// config/broadcasting.go: same env names as Laravel (BROADCAST_CONNECTION=reverb|log|null,
+// REVERB_APP_ID, REVERB_APP_KEY, REVERB_APP_SECRET, REVERB_HOST, REVERB_PORT, REVERB_SCHEME)
+config.Add("broadcasting", reverbgo.Config(config.Env))
+
+// bootstrap/providers.go: after the framework providers. Panics at boot on a bad config.
+&reverbgo.ServiceProvider{}
+
+// routes/channels.go, like Laravel's routes/channels.php
+reverbgo.RegistryFrom(app).Channel("users.{id}", func(ctx context.Context, user any, p map[string]string) (bool, *broadcast.PresenceMember, error) {
+    return fmt.Sprint(user) == p["id"], nil, nil
+})
+
+// routes: POST /broadcasting/auth, inside the session and CSRF middleware group
+auth, err := reverbgo.AuthHandlerFrom(app, userResolver, facades.Log())
+router.Post("/broadcasting/auth", auth.Handle)
+
+// publish; ToOthers() skips the tab that sent Echo's X-Socket-Id (add reverbgo.SocketIDMiddleware())
+err = reverbgo.BroadcasterFrom(app).Broadcast(ctx, []string{"notes"}, "NoteCreated", payload, reverbgo.ToOthers())
+```
+
+| API | Purpose |
+|---|---|
+| `ServiceProvider`, `Config(env)`, `SettingsFrom(cfg)`, `NewPublisher(settings, log)` | Bind a publisher from config. Drivers: `reverb` (HTTP API), `log`, `null` |
+| `PublisherFrom`, `BroadcasterFrom`, `RegistryFrom`, `CredentialsFrom`, `AuthHandlerFrom` | Read the bindings (keys `reverb.publisher` and so on) |
+| `NewRegistry()`, `(*Registry).Channel(pattern, Callback)`, `Authorize` | Channel rules. `users.{id}` guards `private-users.5` and `presence-users.5`; a name with no rule is denied |
+| `Callback` = `func(ctx, user any, params map[string]string) (allowed bool, member *broadcast.PresenceMember, err error)` | A presence rule returns the member; an error is a 500, not a denial |
+| `NewAuthHandler(AuthConfig)`, `(*AuthHandler).Handle` | `POST /broadcasting/auth`: 422 bad input, 403 no user or denied, 500 rule error, 200 with `auth` and (presence) `channel_data` |
+| `NewBroadcaster(pub)`, `(*Broadcaster).Broadcast(ctx, channels, event, payload, opts...)` | Publish. Options: `ToOthers()`, `ExceptSocket(id)` |
+| `SocketIDMiddleware()`, `WithSocketID`, `SocketIDFrom` | Keep Echo's `X-Socket-Id` in the request context for `ToOthers()` |
+
 ## Scaling with Redis, and its limits
 
 With `REVERB_SCALING_ENABLED=true` each node publishes events (including whispers) and
