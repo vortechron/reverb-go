@@ -16,16 +16,20 @@ const (
 	BindingCredentials = "reverb.credentials" //nolint:gosec // a container key, not a secret
 )
 
-// ServiceProvider binds the broadcasting services from the "broadcasting"
+// BroadcastServiceProvider binds the broadcasting services from the "broadcasting"
 // config (see Config). List it after the framework providers, then register
 // channel rules on RegistryFrom(app) in your routes.
 //
+// The type is not called ServiceProvider on purpose: Goravel keys providers by
+// "%T", which would be "*goravel.ServiceProvider" for this package and for
+// nightwatch-go too, so the second one listed would never be registered.
+//
 // Register panics on a bad config, such as BROADCAST_CONNECTION=reverb with no
 // REVERB_APP_KEY, so the app never starts half configured.
-type ServiceProvider struct{}
+type BroadcastServiceProvider struct{}
 
 // Register fills in the default config when the app has none, then binds.
-func (ServiceProvider) Register(app contractsfoundation.Application) {
+func (BroadcastServiceProvider) Register(app contractsfoundation.Application) {
 	cfg := app.MakeConfig()
 	if cfg.GetString("broadcasting.default") == "" {
 		cfg.Add("broadcasting", Config(cfg.Env))
@@ -55,7 +59,7 @@ func (ServiceProvider) Register(app contractsfoundation.Application) {
 }
 
 // Boot has nothing to do. Rules are added by the app, in routes/channels.go.
-func (ServiceProvider) Boot(contractsfoundation.Application) {}
+func (BroadcastServiceProvider) Boot(contractsfoundation.Application) {}
 
 func resolve[T any](app contractsfoundation.Application, key string) (T, bool) {
 	var zero T

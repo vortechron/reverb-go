@@ -52,7 +52,7 @@ func TestProviderBindsPublisherBroadcasterRegistryAndCredentials(t *testing.T) {
 		"REVERB_HOST": "127.0.0.1", "REVERB_PORT": "1", "REVERB_SCHEME": "http",
 	})
 
-	(&ServiceProvider{}).Register(app)
+	(&BroadcastServiceProvider{}).Register(app)
 
 	reg1, reg2 := RegistryFrom(app), RegistryFrom(app)
 	require.NotNil(t, reg1)
@@ -67,7 +67,7 @@ func TestProviderBindsPublisherBroadcasterRegistryAndCredentials(t *testing.T) {
 func TestProviderBadConfigPanicsAtRegister(t *testing.T) {
 	app := containerApp(t, map[string]string{"BROADCAST_CONNECTION": "reverb"})
 
-	assert.Panics(t, func() { (&ServiceProvider{}).Register(app) })
+	assert.Panics(t, func() { (&BroadcastServiceProvider{}).Register(app) })
 }
 
 func TestFromHelpersReturnNilWhenNothingIsBound(t *testing.T) {
@@ -84,7 +84,7 @@ func TestAuthHandlerFromApp(t *testing.T) {
 	app := containerApp(t, map[string]string{
 		"BROADCAST_CONNECTION": "log", "REVERB_APP_ID": "app", "REVERB_APP_KEY": "key", "REVERB_APP_SECRET": "secret",
 	})
-	(&ServiceProvider{}).Register(app)
+	(&BroadcastServiceProvider{}).Register(app)
 
 	h, err := AuthHandlerFrom(app, signedIn("1"), nil)
 
@@ -93,5 +93,5 @@ func TestAuthHandlerFromApp(t *testing.T) {
 }
 
 func TestProviderBootDoesNothingYet(t *testing.T) {
-	(&ServiceProvider{}).Boot(containerApp(t, nil))
+	(&BroadcastServiceProvider{}).Boot(containerApp(t, nil))
 }

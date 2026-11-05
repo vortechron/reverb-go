@@ -173,7 +173,7 @@ import reverbgo "github.com/vortechron/reverb-go/goravel"
 config.Add("broadcasting", reverbgo.Config(config.Env))
 
 // bootstrap/providers.go: after the framework providers. Panics at boot on a bad config.
-&reverbgo.ServiceProvider{}
+&reverbgo.BroadcastServiceProvider{}
 
 // routes/channels.go, like Laravel's routes/channels.php
 reverbgo.RegistryFrom(app).Channel("users.{id}", func(ctx context.Context, user any, p map[string]string) (bool, *broadcast.PresenceMember, error) {
@@ -190,7 +190,7 @@ err = reverbgo.BroadcasterFrom(app).Broadcast(ctx, []string{"notes"}, "NoteCreat
 
 | API | Purpose |
 |---|---|
-| `ServiceProvider`, `Config(env)`, `SettingsFrom(cfg)`, `NewPublisher(settings, log)` | Bind a publisher from config. Drivers: `reverb` (HTTP API), `log`, `null` |
+| `BroadcastServiceProvider`, `Config(env)`, `SettingsFrom(cfg)`, `NewPublisher(settings, log)` | Bind a publisher from config. Drivers: `reverb` (HTTP API), `log`, `null` |
 | `PublisherFrom`, `BroadcasterFrom`, `RegistryFrom`, `CredentialsFrom`, `AuthHandlerFrom` | Read the bindings (keys `reverb.publisher` and so on) |
 | `NewRegistry()`, `(*Registry).Channel(pattern, Callback)`, `Authorize` | Channel rules. `users.{id}` guards `private-users.5` and `presence-users.5`; a name with no rule is denied |
 | `Callback` = `func(ctx, user any, params map[string]string) (allowed bool, member *broadcast.PresenceMember, err error)` | A presence rule returns the member; an error is a 500, not a denial |
