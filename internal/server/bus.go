@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 
+	"github.com/vortechron/reverb-go/broadcast"
+
 	"github.com/vortechron/reverb-go/internal/apps"
 )
 
@@ -42,11 +44,37 @@ func (s *Server) startBus() {
 	}
 }
 
+// Healther is implemented by buses that can report a broken connection.
+// /up answers 503 while it returns an error.
+type Healther interface {
+	Healthy() error
+}
+
+// validMessage checks a message from another node before it touches a hub.
+// The signature proves who sent it; this proves it makes sense.
+func (s *Server) validMessage(m Message) bool {
+	if m.Node == s.nodeID {
+		return false
+	}
+	if _, ok := s.hubs[m.AppID]; !ok {
+		return false
+	}
+	switch m.Kind {
+	case kindEvent:
+		return broadcast.ValidChannelName(m.Name) && len(m.Frame) > 0 &&
+			(m.Except == "" || broadcast.ValidSocketID(m.Except))
+	case kindTerminate:
+		return m.UserID != ""
+	}
+	return false
+}
+
 func (s *Server) fromBus(m Message) {
-	h, ok := s.hubs[m.AppID]
-	if m.Node == s.nodeID || !ok {
+	if !s.validMessage(m) {
+		s.log.Warn("ignoring invalid bus message", "kind", m.Kind, "app_id", m.AppID)
 		return
 	}
+	h := s.hubs[m.AppID]
 	switch m.Kind {
 	case kindEvent:
 		if m.NoCache {

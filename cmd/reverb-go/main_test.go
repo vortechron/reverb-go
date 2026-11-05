@@ -41,20 +41,29 @@ func runUntilCancelled(t *testing.T, env func(string) string) (url string, stop 
 	return "http://" + ln.Addr().String(), func() error { cancel(); return <-done }
 }
 
+// waitHealthy polls /up until it answers 200. A node with scaling on answers 503
+// until its Redis subscription is up.
 func waitHealthy(t *testing.T, url string) (int, string) {
 	t.Helper()
-	for range 100 {
+	var code int
+	var body string
+	for range 150 {
 		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, url+"/up", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
-			body, _ := io.ReadAll(resp.Body)
+			b, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-			return resp.StatusCode, string(body)
+			code, body = resp.StatusCode, string(b)
+			if code == http.StatusOK {
+				return code, body
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("server did not start")
-	return 0, ""
+	if code == 0 {
+		t.Fatal("server did not start")
+	}
+	return code, body
 }
 
 func TestServeAnswersHealthCheckAndStopsOnCancel(t *testing.T) {
@@ -70,7 +79,7 @@ func TestServeAnswersHealthCheckAndStopsOnCancel(t *testing.T) {
 func TestServeWithRedisScaling(t *testing.T) {
 	mr := miniredis.RunT(t)
 	url, stop := runUntilCancelled(t, testEnv(map[string]string{
-		"REVERB_SCALING_ENABLED": "true", "REDIS_HOST": mr.Host(), "REDIS_PORT": mr.Port(),
+		"REVERB_SCALING_ENABLED": "true", "REVERB_SCALING_SECRET": "bus-secret", "REDIS_HOST": mr.Host(), "REDIS_PORT": mr.Port(),
 	}))
 	if code, _ := waitHealthy(t, url); code != 200 {
 		t.Fatalf("status %d", code)
@@ -82,7 +91,7 @@ func TestServeWithRedisScaling(t *testing.T) {
 
 func TestServeFailsWhenRedisIsUnreachable(t *testing.T) {
 	cfg, err := config.Load(testEnv(map[string]string{
-		"REVERB_SCALING_ENABLED": "true", "REDIS_HOST": "127.0.0.1", "REDIS_PORT": "1",
+		"REVERB_SCALING_ENABLED": "true", "REVERB_SCALING_SECRET": "bus-secret", "REDIS_HOST": "127.0.0.1", "REDIS_PORT": "1",
 	}))
 	if err != nil {
 		t.Fatal(err)

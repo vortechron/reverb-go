@@ -45,9 +45,7 @@ func (s *Server) routeAPI(mux *http.ServeMux, p string) {
 	mux.HandleFunc("GET "+p+"/apps/{appId}/channels/{channel}", s.api(s.channel))
 	mux.HandleFunc("GET "+p+"/apps/{appId}/channels/{channel}/users", s.api(s.channelUsers))
 	mux.HandleFunc("POST "+p+"/apps/{appId}/users/{userId}/terminate_connections", s.api(s.terminate))
-	mux.HandleFunc("GET "+p+"/up", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"health": "OK"})
-	})
+	mux.HandleFunc("GET "+p+"/up", s.health)
 }
 
 // api wraps a handler with app lookup, body limit and signature check.
@@ -135,4 +133,15 @@ func (s *Server) ConnectionCount(appID string) int {
 		return h.ConnectionCount()
 	}
 	return 0
+}
+
+// health is the liveness check. It fails while the bus to other nodes is broken.
+func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+	if h, ok := s.opts.Bus.(Healther); ok {
+		if err := h.Healthy(); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"health": "degraded", "error": err.Error()})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"health": "OK"})
 }

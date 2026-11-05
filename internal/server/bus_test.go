@@ -2,7 +2,11 @@ package server_test
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -33,9 +37,9 @@ func (b *memBus) Subscribe(_ context.Context, h func(server.Message)) error {
 	return nil
 }
 
-func twoNodes(t *testing.T) (*harness, *harness) {
+func twoNodes(t *testing.T) (a, b *harness, bus *memBus) {
 	t.Helper()
-	bus := &memBus{}
+	bus = &memBus{}
 	mk := func() *harness {
 		reg, err := apps.NewRegistry([]apps.App{testApp()})
 		if err != nil {
@@ -46,11 +50,11 @@ func twoNodes(t *testing.T) (*harness, *harness) {
 		t.Cleanup(func() { hs.Close(); srv.Close() })
 		return &harness{srv: srv, http: hs, app: testApp()}
 	}
-	return mk(), mk()
+	return mk(), mk(), bus
 }
 
 func TestEventPublishedOnOneNodeReachesClientsOnAnother(t *testing.T) {
-	a, b := twoNodes(t)
+	a, b, _ := twoNodes(t)
 	onB := b.connect(t)
 	onA := a.connect(t)
 	onB.subscribeOK("news", "", "")
@@ -68,7 +72,7 @@ func TestEventPublishedOnOneNodeReachesClientsOnAnother(t *testing.T) {
 }
 
 func TestWhisperCrossesNodes(t *testing.T) {
-	a, b := twoNodes(t)
+	a, b, _ := twoNodes(t)
 	onA, onB := a.connect(t), b.connect(t)
 	onA.subscribeOK("private-x", a.auth(t, onA, "private-x"), "")
 	onB.subscribeOK("private-x", b.auth(t, onB, "private-x"), "")
@@ -80,7 +84,7 @@ func TestWhisperCrossesNodes(t *testing.T) {
 }
 
 func TestTerminateCrossesNodes(t *testing.T) {
-	a, b := twoNodes(t)
+	a, b, _ := twoNodes(t)
 	onB := b.connect(t)
 	auth, data := b.presence(t, onB, 3, nil)
 	onB.subscribeOK("presence-r", auth, data)
@@ -89,5 +93,64 @@ func TestTerminateCrossesNodes(t *testing.T) {
 	}
 	if _, err := onB.tryRead(2e9); err == nil {
 		t.Fatal("client on node B should be disconnected")
+	}
+}
+
+type sickBus struct {
+	memBus
+	err error
+}
+
+func (b *sickBus) Healthy() error { return b.err }
+
+func TestUpReportsAnUnhealthyBus(t *testing.T) {
+	bus := &sickBus{err: errors.New("redis is gone")}
+	reg, err := apps.NewRegistry([]apps.App{testApp()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := server.New(server.Options{Apps: reg, Bus: bus})
+	hs := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() { hs.Close(); srv.Close() })
+
+	get := func() (int, string) {
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/up", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if code, body := get(); code != 503 || !strings.Contains(body, "redis is gone") {
+		t.Fatalf("unhealthy bus: %d %s", code, body)
+	}
+	bus.err = nil
+	if code, _ := get(); code != 200 {
+		t.Fatalf("healthy bus: %d", code)
+	}
+}
+
+func TestBusMessagesWithBadContentAreIgnored(t *testing.T) {
+	a, b, bus := twoNodes(t)
+	onB := b.connect(t)
+	onB.subscribeOK("news", "", "")
+	forged := []server.Message{
+		{Node: "evil", Kind: "event", AppID: "no-such-app", Name: "news", Frame: []byte(`{"event":"x"}`)},
+		{Node: "evil", Kind: "event", AppID: "app1", Name: "bad channel:name", Frame: []byte(`{"event":"x"}`)},
+		{Node: "evil", Kind: "mystery", AppID: "app1", Name: "news", Frame: []byte(`{"event":"x"}`)},
+		{Node: "evil", Kind: "event", AppID: "app1", Name: "news", Frame: []byte(`{"event":"x"}`), Except: "not a socket id"},
+		{Node: "evil", Kind: "terminate", AppID: "app1", UserID: ""},
+	}
+	for _, m := range forged {
+		_ = bus.Publish(t.Context(), m)
+	}
+	// If any forged message got through, it would arrive before "ok".
+	if code, _ := a.post(t, "events", `{"name":"ok","channel":"news","data":"d"}`); code != 200 {
+		t.Fatalf("status %d", code)
+	}
+	if f := onB.read(); f.Event != "ok" {
+		t.Fatalf("got %+v", f)
 	}
 }

@@ -20,8 +20,8 @@ func buildServer(ctx context.Context, cfg config.Config, log *slog.Logger) (*ser
 	opts := server.Options{Apps: cfg.Apps, Path: cfg.Path, MaxRequestSize: cfg.MaxRequestSize, Logger: log}
 	cleanup := func() {}
 	if cfg.Scaling.Enabled {
-		bus := redisbus.New(redisbus.Options{
-			Addr: cfg.Scaling.Addr, Password: cfg.Scaling.Password, DB: cfg.Scaling.DB, Channel: cfg.Scaling.Channel,
+		bus := redisbus.New(redisbus.Options{ //nolint:contextcheck // the bus owns its goroutines and ends them in Close
+			Addr: cfg.Scaling.Addr, Password: cfg.Scaling.Password, DB: cfg.Scaling.DB, Channel: cfg.Scaling.Channel, Secret: cfg.Scaling.Secret, Logger: log,
 		})
 		if err := bus.Ping(ctx); err != nil {
 			_ = bus.Close()
