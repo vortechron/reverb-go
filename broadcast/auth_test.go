@@ -101,8 +101,10 @@ func TestSocketIDFromRequestReadsEchoHeader(t *testing.T) {
 	}
 }
 
-var badSocketIDs = []string{"", "abc", "1.2:x", "1234", "1.2.3", "1.2\n", " 1.2", "1.2:private-a"}
-var badChannels = []string{"", "private-a:b", "private a", "private-a\n", "private-<x>", "a/b", "p\u00e9", strings.Repeat("a", 201)}
+var (
+	badSocketIDs = []string{"", "abc", "1.2:x", "1234", "1.2.3", "1.2\n", " 1.2", "1.2:private-a"}
+	badChannels  = []string{"", "private-a:b", "private a", "private-a\n", "private-<x>", "a/b", "p\u00e9", strings.Repeat("a", 201)}
+)
 
 func TestAuthorizePrivateRejectsUnsafeInput(t *testing.T) {
 	for _, id := range badSocketIDs {
