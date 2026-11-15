@@ -1,5 +1,7 @@
 # reverb-go
 
+Docs: https://go.vortechron.com/reverb
+
 A Pusher Channels (protocol 7) WebSocket server in Go. It is a drop-in for
 [Laravel Reverb](https://github.com/laravel/reverb): Laravel Echo and pusher-js connect with
 no client change. It also ships a Go package, `broadcast`, for publishing events and for
