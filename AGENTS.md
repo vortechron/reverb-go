@@ -10,3 +10,12 @@ Pusher protocol 7 server in Go, a drop-in for Laravel Reverb, plus the `broadcas
 - Security rules already decided: `socket_id` and channel names are validated before signing and on subscribe; the connection limit uses `Hub.TryAdd`; client events never update a cache channel (`PublishNoCache`).
 - Local ports 6000-6099 only. Redis, if used: DB 13 and a unique key prefix. Stop every process you start.
 - Do not push or commit unless asked. No attribution lines in commits.
+
+## Docs: keep closing the gap with laravel/reverb
+
+`docs/` is this package's documentation. It ships inside the Go module and is published at https://go.vortechron.com/reverb (Markdown for agents: https://go.vortechron.com/llms.txt). Agents learn the package from it, so keep it right and complete.
+
+- Every change ships its docs in the same branch: the feature's page, `docs/laravel-to-go.md`, `docs/differences.md`, the README feature list and CHANGELOG. Every Go snippet compiles.
+- Each time you touch a feature, open the official docs of laravel/reverb for it and compare. Close a small gap now, or list it in `docs/differences.md` with the reason. That file is this package's list of what is still missing or different.
+- Had to read the source to learn how something works? Put the answer in the docs page that should have held it.
+- Format: the same shape as the laravel/docs repo. `docs/documentation.md` is the sidebar, one page per feature, GitHub alerts (`> [!NOTE]`) for notes and warnings.
